@@ -1,0 +1,38 @@
+{
+  "sbS": {},
+  "sbN": {},
+  "sbE": {},
+  "dfS": {},
+  "dfN": {},
+  "rL": {},
+  "frS": {},
+  "frN": {},
+  "cmmcS": {},
+  "cmmcN": {},
+  "intCfg": {},
+  "pg": "dashboard",
+  "sbF": {
+    "q": "",
+    "tp": "all",
+    "rl": "all",
+    "ss": "all"
+  },
+  "dfF": {
+    "ph": "all",
+    "pr": "all"
+  },
+  "pbCat": "bitlocker",
+  "pbId": null,
+  "sysTab": "issues",
+  "sysFlt": "",
+  "sysLoc": "all",
+  "sysTyp": "all",
+  "frFam": "AC",
+  "cmmcDom": "AC",
+  "_ts": 0,
+  "_portal": "InterScripts STDPS v6",
+  "fortAlerts": [],
+  "fortDevices": [],
+  "fortCfg": {},
+  "msData": {}
+}
