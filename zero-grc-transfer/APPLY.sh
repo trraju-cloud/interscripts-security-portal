@@ -141,7 +141,7 @@ print('  ✔ sidebar.tsx patched')
 PYEOF
 fi
 
-# ─── Append GRC Prisma models (idempotent) ────────────────────────────────
+# ─── Append GRC Prisma models to schema.prisma (idempotent) ───────────────
 echo ""
 echo "=== Step 5: Prisma schema models ==="
 SCHEMA="$ZERO_ROOT/packages/db/prisma/schema.prisma"
@@ -378,17 +378,23 @@ SCHEMAEOF
   echo "  ✔ GRC models appended to schema.prisma"
 fi
 
-# ─── Run Prisma migration ───────────────────────────────────────────────────
+# ─── Add GRC Prisma migration file (idempotent) ────────────────────────────
 echo ""
-echo "=== Step 6: Prisma database migration ==="
-if ls "$ZERO_ROOT/packages/db/prisma/migrations/"*grc* 2>/dev/null | head -1 | grep -q .; then
-  echo "  ✔ GRC migration already exists — skipping"
+echo "=== Step 6: Prisma migration file for GRC tables ==="
+if grep -rl 'CREATE TABLE.*grc_framework' "$ZERO_ROOT/packages/db/prisma/migrations/" 2>/dev/null | head -1 | grep -q .; then
+  echo "  ✔ GRC table migration already present"
 else
-  echo "  Running: npx prisma migrate dev --name add_grc_models"
-  cd "$ZERO_ROOT/packages/db"
-  npx prisma migrate dev --name add_grc_models
-  cd "$ZERO_ROOT"
-  echo "  ✔ Migration created and applied to development DB"
+  echo "  Adding GRC tables migration file..."
+  GRC_MIGRATION_DIR="$ZERO_ROOT/packages/db/prisma/migrations/20260810210000_create_grc_tables"
+  GRC_MIGRATION_SRC="$SCRIPT_DIR/packages/db/prisma/migrations/20260810210000_create_grc_tables/migration.sql"
+  mkdir -p "$GRC_MIGRATION_DIR"
+  if [ -f "$GRC_MIGRATION_SRC" ]; then
+    cp "$GRC_MIGRATION_SRC" "$GRC_MIGRATION_DIR/migration.sql"
+    echo "  ✔ Migration file copied — CI/CD will apply via 'prisma migrate deploy'"
+  else
+    echo "  ⚠ Migration source not found: $GRC_MIGRATION_SRC"
+    echo "  ⚠ Run manually: cd packages/db && npx prisma migrate dev --name create_grc_tables"
+  fi
 fi
 
 # ─── Commit and push ────────────────────────────────────────────────────────
@@ -405,20 +411,20 @@ git add "apps/web/src/app/(app)/it-security/playbooks/" 2>/dev/null || true
 git add apps/web/src/components/shell/sidebar.tsx 2>/dev/null || true
 git add apps/api/src/server.ts 2>/dev/null || true
 git add packages/db/prisma/schema.prisma 2>/dev/null || true
-git add packages/db/prisma/migrations/ 2>/dev/null || true
+git add packages/db/prisma/migrations/20260810210000_create_grc_tables/ 2>/dev/null || true
 
 git status
 echo ""
 
 if git diff --cached --quiet; then
   echo "  ✔ Nothing new to commit — all changes already in ADO"
-  echo "  The Prisma migration file is the key deliverable. Push it if not already done."
 else
   git commit -m "feat(grc): add GRC compliance platform — FedRAMP 20x, CMMC L2, Defender, FortiGate, Vanta, Secure Score
 
-13 Prisma models create the GRC table layer in PostgreSQL.
-7 Fastify API routes serve all GRC data endpoints.
-5 Next.js pages: GRC Dashboard, Compliance Frameworks, Defender Plan, FortiGate, Playbooks."
+13 Prisma models + migration SQL (20260810210000_create_grc_tables) create the
+GRC table layer in PostgreSQL. 7 Fastify API routes serve all GRC data endpoints.
+5 Next.js pages: GRC Dashboard, Compliance Frameworks, Defender Plan, FortiGate,
+Playbooks. Sidebar gains 5 new nav items under IT & Security."
   git push
   echo "  ✔ Pushed to ADO — CI/CD will apply migration and deploy"
 fi
@@ -427,6 +433,10 @@ echo ""
 echo "╔═══════════════════════════════════════════════════════╗"
 echo "║  GRC Migration complete!                                  ║"
 echo "║  CI/CD will apply the migration to staging → prod.        ║"
+echo "║                                                           ║"
+echo "║  NEXT: Grant yourself compliance + itsec access           ║"
+echo "║  Zero → Settings → Access → find your user               ║"
+echo "║  Add: compliance:admin  itsec:admin                       ║"
 echo "║                                                           ║"
 echo "║  GRC pages on Zero:                                       ║"
 echo "║    /it-security/grc-dashboard  (Posture Dashboard)       ║"
