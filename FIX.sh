@@ -74,8 +74,15 @@ else
 - Add migration 20260810210000_create_grc_tables with 13 CREATE TABLE statements"
 
   echo ""
-  echo "── Pushing to ADO main ──────────────────────────────────────────────────────"
-  git push origin main
+  echo "── Pushing to ADO main (with auto-rebase) ───────────────────────────────────"
+  for attempt in 1 2 3 4; do
+    if git push origin main 2>&1; then
+      break
+    fi
+    echo "  Push rejected — rebasing against remote main (attempt $attempt)..."
+    git pull --rebase origin main
+    sleep "$((attempt * 2))"
+  done
 fi
 
 echo ""
