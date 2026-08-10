@@ -4,34 +4,16 @@ import * as React from 'react';
 import { PageHeader } from '@/components/shell/page-header';
 import { ModuleGate } from '@/components/shell/access-denied';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface FrameworkSummary {
-  key: string; name: string; totalControls: number; percentComplete: number;
-}
-interface DefenderSummary {
-  total: number; percentComplete: number; p1Percent: number; p2Percent: number;
-}
-interface SecureScoreSummary {
-  score?: number; maxScore?: number; percentage?: number; snapshotAt?: string;
-}
+interface FrameworkSummary { key: string; name: string; totalControls: number; percentComplete: number; }
+interface DefenderSummary { total: number; percentComplete: number; p1Percent: number; p2Percent: number; }
+interface SecureScoreSummary { score?: number; maxScore?: number; percentage?: number; snapshotAt?: string; }
 interface PostureScore {
   postureScore: number;
-  breakdown: {
-    frameworks: { score: number; weight: number };
-    defender: { score: number; weight: number };
-    secureScore: { score: number; weight: number };
-  };
+  breakdown: { frameworks: { score: number; weight: number }; defender: { score: number; weight: number }; secureScore: { score: number; weight: number }; };
   riskLevel: 'low' | 'medium' | 'high' | 'critical';
 }
-interface AlertItem {
-  type: string; severity: string; title: string; ref?: string;
-}
-interface ActivityEvent {
-  id: string; action: string; createdAt: string; actorEmail?: string;
-}
-
-// ─── Helper components ────────────────────────────────────────────────────────
+interface AlertItem { type: string; severity: string; title: string; ref?: string; }
+interface ActivityEvent { id: string; action: string; createdAt: string; actorEmail?: string; }
 
 function RiskBadge({ level }: { level: string }) {
   const styles: Record<string, string> = {
@@ -40,18 +22,11 @@ function RiskBadge({ level }: { level: string }) {
     high: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
     critical: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
   };
-  return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${styles[level] ?? styles.medium}`}>
-      {level}
-    </span>
-  );
+  return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${styles[level] ?? styles.medium}`}>{level}</span>;
 }
 
 function SeverityDot({ severity }: { severity: string }) {
-  const colors: Record<string, string> = {
-    critical: 'bg-red-500', high: 'bg-orange-500', medium: 'bg-yellow-500',
-    low: 'bg-blue-500', informational: 'bg-gray-400',
-  };
+  const colors: Record<string, string> = { critical: 'bg-red-500', high: 'bg-orange-500', medium: 'bg-yellow-500', low: 'bg-blue-500', informational: 'bg-gray-400' };
   return <span className={`inline-block h-2 w-2 rounded-full ${colors[severity] ?? 'bg-gray-400'}`} />;
 }
 
@@ -78,22 +53,9 @@ function PostureMeter({ score }: { score: number }) {
   );
 }
 
-export default function GrcDashboardPage() {
-  return (
-    <ModuleGate module="compliance" prettyName="GRC Compliance">
-      <PageHeader
-        eyebrow="IT & Security · GRC"
-        title="Compliance Posture Dashboard"
-        description="Composite GRC score from frameworks, Defender plan, and Secure Score."
-      />
-      <GrcDashboardContent />
-    </ModuleGate>
-  );
-}
-
 function GrcDashboardContent() {
   const [posture, setPosture] = React.useState<PostureScore | null>(null);
-  const [summary, setSummary] = React.useState<any | null>(null);
+  const [summary, setSummary] = React.useState<{ frameworks: FrameworkSummary[]; defenderPlan: DefenderSummary; secureScore: SecureScoreSummary | null; playbooks: { total: number }; fortigate: { configured: boolean; openAlerts: number; criticalAlerts: number }; vanta: { configured: boolean; lastSyncAt?: string | null }; } | null>(null);
   const [alerts, setAlerts] = React.useState<AlertItem[]>([]);
   const [activity, setActivity] = React.useState<ActivityEvent[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -116,7 +78,7 @@ function GrcDashboardContent() {
     void fetchAll();
   }, []);
 
-  if (loading) return <div className="flex h-64 items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--brand-500)] border-t-transparent" /></div>;
+  if (loading) return (<div className="flex h-64 items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--brand-500)] border-t-transparent" /></div>);
 
   const ss = summary?.secureScore;
   const ssLabel = ss?.percentage != null ? `${ss.percentage.toFixed(1)}%` : '—';
@@ -125,14 +87,65 @@ function GrcDashboardContent() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col items-center gap-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-raised)] p-8">
-        {posture ? (<><PostureMeter score={posture.postureScore} /><RiskBadge level={posture.riskLevel} /></>) : (<p className="text-[var(--ink-tertiary)]">No posture data yet.</p>)}
+        {posture ? (
+          <>
+            <PostureMeter score={posture.postureScore} />
+            <RiskBadge level={posture.riskLevel} />
+            <div className="mt-2 flex flex-wrap justify-center gap-6 text-center text-sm text-[var(--ink-secondary)]">
+              <span>Frameworks <strong>{Math.round(posture.breakdown.frameworks.score)}%</strong> <span className="text-[var(--ink-tertiary)]">(wt {posture.breakdown.frameworks.weight}%)</span></span>
+              <span>Defender P1 <strong>{Math.round(posture.breakdown.defender.score)}%</strong> <span className="text-[var(--ink-tertiary)]">(wt {posture.breakdown.defender.weight}%)</span></span>
+              <span>Secure Score <strong>{Math.round(posture.breakdown.secureScore.score)}%</strong> <span className="text-[var(--ink-tertiary)]">(wt {posture.breakdown.secureScore.weight}%)</span></span>
+            </div>
+          </>
+        ) : (<p className="text-[var(--ink-tertiary)]">No posture data yet — enable at least one framework to begin.</p>)}
       </div>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        {summary?.frameworks.slice(0, 2).map((fw: FrameworkSummary) => (<MetricCard key={fw.key} label={fw.name} value={`${Math.round(fw.percentComplete)}%`} sub={`${fw.totalControls} controls`} />))}
+        {summary?.frameworks.slice(0, 2).map(fw => (<MetricCard key={fw.key} label={fw.name} value={`${Math.round(fw.percentComplete)}%`} sub={`${fw.totalControls} controls`} />))}
         {(summary?.frameworks.length ?? 0) === 0 && (<><MetricCard label="FedRAMP 20x" value="—" sub="Not enabled" /><MetricCard label="CMMC Level 2" value="—" sub="Not enabled" /></>)}
         <MetricCard label="Defender Plan" value={`${Math.round(summary?.defenderPlan.p1Percent ?? 0)}%`} sub="P1 tasks complete" />
         <MetricCard label="Secure Score" value={ssLabel} sub={ssMax} />
       </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="col-span-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-raised)] p-4">
+          <h2 className="mb-3 text-sm font-semibold text-[var(--ink-primary)]">Active Items Requiring Attention</h2>
+          {alerts.length === 0 ? (<p className="text-sm text-[var(--ink-tertiary)]">No active alerts. GRC posture is healthy.</p>) : (
+            <ul className="divide-y divide-[var(--border-subtle)]">
+              {alerts.slice(0, 10).map((a, i) => (
+                <li key={i} className="flex items-start gap-3 py-2">
+                  <SeverityDot severity={a.severity} />
+                  <div className="min-w-0 flex-1"><p className="truncate text-sm text-[var(--ink-primary)]">{a.title}</p><p className="text-xs text-[var(--ink-tertiary)] capitalize">{a.type.replace(/_/g, ' ')} {a.ref ? `· ${a.ref}` : ''}</p></div>
+                  <span className="shrink-0 text-xs capitalize text-[var(--ink-tertiary)]">{a.severity}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="space-y-4">
+          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-raised)] p-4">
+            <h2 className="mb-3 text-sm font-semibold text-[var(--ink-primary)]">Integrations</h2>
+            <ul className="space-y-2 text-sm">
+              <li className="flex items-center justify-between"><span className="text-[var(--ink-secondary)]">FortiGate</span><span className={`font-medium ${summary?.fortigate.configured ? 'text-green-600' : 'text-[var(--ink-tertiary)]'}`}>{summary?.fortigate.configured ? `Connected · ${summary.fortigate.openAlerts} open` : 'Not connected'}</span></li>
+              <li className="flex items-center justify-between"><span className="text-[var(--ink-secondary)]">Vanta</span><span className={`font-medium ${summary?.vanta.configured ? 'text-green-600' : 'text-[var(--ink-tertiary)]'}`}>{summary?.vanta.configured ? 'Connected' : 'Not connected'}</span></li>
+              <li className="flex items-center justify-between"><span className="text-[var(--ink-secondary)]">Secure Score</span><span className={`font-medium ${ss?.snapshotAt ? 'text-green-600' : 'text-[var(--ink-tertiary)]'}`}>{ss?.snapshotAt ? 'Synced' : 'Not synced'}</span></li>
+            </ul>
+          </div>
+          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-raised)] p-4">
+            <h2 className="mb-3 text-sm font-semibold text-[var(--ink-primary)]">Recent GRC Activity</h2>
+            {activity.length === 0 ? (<p className="text-xs text-[var(--ink-tertiary)]">No recent activity.</p>) : (
+              <ul className="space-y-2">{activity.slice(0, 6).map(ev => (<li key={ev.id} className="text-xs"><span className="font-medium text-[var(--ink-secondary)]">{ev.action.replace('grc.', '').replace(/\./g, ' › ')}</span>{ev.actorEmail && <span className="text-[var(--ink-tertiary)]"> by {ev.actorEmail.split('@')[0]}</span>}</li>))}</ul>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
+  );
+}
+
+export default function GrcDashboardPage() {
+  return (
+    <ModuleGate module="compliance" prettyName="GRC Compliance">
+      <PageHeader eyebrow="IT &amp; Security · GRC" title="Compliance Posture Dashboard" description="Composite GRC score from frameworks, Defender plan, and Secure Score." />
+      <GrcDashboardContent />
+    </ModuleGate>
   );
 }
