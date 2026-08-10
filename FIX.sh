@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # FIX.sh — Run from ~/code/zero (your ADO clone root).
 # Fixes 2 TypeScript exactOptionalPropertyTypes errors in grc-frameworks.ts
-# and ensures the GRC database migration is correct.
+# and ensures the GRC database migration SQL is correct.
 set -euo pipefail
 
 ROUTES_DIR="apps/api/src/routes"
@@ -19,29 +19,28 @@ if [ ! -f "package.json" ] || [ ! -d "apps/api" ]; then
   exit 1
 fi
 
-# ── Fix 1: implementationNote: body.implementationNote, → ?? null ────────────
 FRAMEWORKS="$ROUTES_DIR/grc-frameworks.ts"
 
-if ! grep -q 'implementationNote: body.implementationNote ?? null' "$FRAMEWORKS"; then
-  sed -i 's/implementationNote: body\.implementationNote,/implementationNote: body.implementationNote ?? null,/' "$FRAMEWORKS"
-  echo "✔  Fixed line 530 — implementationNote ?? null"
+# ── Fix 1: implementationNote: body.implementationNote, → ?? null ────────────
+if ! grep -q 'implementationNote: body\.implementationNote ?? null' "$FRAMEWORKS"; then
+  perl -pi -e 's/implementationNote: body\.implementationNote,/implementationNote: body.implementationNote ?? null,/' "$FRAMEWORKS"
+  echo "✔  Fixed: implementationNote ?? null"
 else
-  echo "✔  Line 530 already fixed (idempotent)"
+  echo "✔  implementationNote already fixed (idempotent)"
 fi
 
 # ── Fix 2: nextReviewAt: nextReviewDate, → ?? null ───────────────────────────
-if ! grep -q 'nextReviewAt: nextReviewDate ?? null' "$FRAMEWORKS"; then
-  sed -i 's/nextReviewAt:       nextReviewDate,/nextReviewAt:       nextReviewDate ?? null,/' "$FRAMEWORKS"
-  echo "✔  Fixed line 534 — nextReviewAt ?? null"
+if ! grep -q 'nextReviewAt:.*nextReviewDate ?? null' "$FRAMEWORKS"; then
+  perl -pi -e 's/(nextReviewAt:\s+nextReviewDate),/$1 ?? null,/' "$FRAMEWORKS"
+  echo "✔  Fixed: nextReviewAt ?? null"
 else
-  echo "✔  Line 534 already fixed (idempotent)"
+  echo "✔  nextReviewAt already fixed (idempotent)"
 fi
 
 # ── Fix 3: Ensure GRC database migration contains CREATE TABLE statements ────
 NEW_MIG_DIR="$MIGRATIONS_DIR/20260810210000_create_grc_tables"
 NEW_MIG_SQL="$NEW_MIG_DIR/migration.sql"
 
-# Clone relay to get the migration SQL if we don't already have it
 if [ ! -f "$NEW_MIG_SQL" ] || ! grep -q 'CREATE TABLE.*grc_framework' "$NEW_MIG_SQL" 2>/dev/null; then
   echo ""
   echo "── Fetching GRC migration SQL from relay repo ──────────────────────────────"
@@ -53,7 +52,7 @@ if [ ! -f "$NEW_MIG_SQL" ] || ! grep -q 'CREATE TABLE.*grc_framework' "$NEW_MIG_
   cp /tmp/grc-fix-relay/zero-grc-transfer/packages/db/prisma/migrations/20260810210000_create_grc_tables/migration.sql \
      "$NEW_MIG_SQL"
   rm -rf /tmp/grc-fix-relay
-  echo "✔  GRC migration SQL written to $NEW_MIG_SQL"
+  echo "✔  GRC migration SQL written"
 else
   echo "✔  GRC migration already present (idempotent)"
 fi
@@ -62,18 +61,16 @@ fi
 echo ""
 echo "── Committing and pushing ──────────────────────────────────────────────────"
 
-git add \
-  "$FRAMEWORKS" \
-  "$NEW_MIG_DIR/migration.sql" 2>/dev/null || true
+git add "$FRAMEWORKS" || true
+[ -f "$NEW_MIG_SQL" ] && git add "$NEW_MIG_SQL" || true
 
-# Only commit if there are staged changes
 if git diff --cached --quiet; then
   echo "✔  Nothing to commit — all fixes already applied"
 else
-  git commit -m "fix(grc): resolve exactOptionalPropertyTypes errors + add CREATE TABLE migration
+  git commit -m "fix(grc): resolve exactOptionalPropertyTypes TS errors + add migration
 
-- grc-frameworks.ts line 530: implementationNote ?? null (string|undefined → string|null)
-- grc-frameworks.ts line 534: nextReviewAt ?? null (Date|undefined → Date|null)
+- grc-frameworks.ts: implementationNote ?? null (string|undefined → string|null)
+- grc-frameworks.ts: nextReviewAt ?? null (Date|undefined → Date|string|null)
 - Add migration 20260810210000_create_grc_tables with 13 CREATE TABLE statements"
 
   echo ""
@@ -83,6 +80,6 @@ fi
 
 echo ""
 echo "══════════════════════════════════════════════════════════════════════════"
-echo "  Done. CI pipeline should now pass typecheck."
+echo "  Done. CI pipeline should now pass typecheck and deploy GRC tables."
 echo "══════════════════════════════════════════════════════════════════════════"
 echo ""
