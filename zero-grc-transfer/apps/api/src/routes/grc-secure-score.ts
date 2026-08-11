@@ -18,28 +18,12 @@ import { v7 as uuidv7 } from 'uuid';
 import { requireModule } from '../middleware/module-guard.js';
 import { getDB } from './time.js';
 import { record as recordAudit } from '../lib/audit-collector.js';
+import { getGraphClient } from '../lib/graph-client.js';
 
-// ─── Microsoft Graph token helper ───────────────────────────────────────────
-
-async function getMsGraphToken(): Promise<string | null> {
-  const tenantId = process.env['AZURE_TENANT_ID'];
-  const clientId = process.env['AZURE_CLIENT_ID'];
-  const clientSecret = process.env['AZURE_CLIENT_SECRET'];
-  if (!tenantId || !clientId || !clientSecret) return null;
-
-  const url = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-  const params = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: clientId,
-    client_secret: clientSecret,
-    scope: 'https://graph.microsoft.com/.default',
-  });
-
-  const res = await fetch(url, { method: 'POST', body: params });
-  if (!res.ok) return null;
-  const data = await res.json() as { access_token?: string };
-  return data.access_token ?? null;
-}
+// Auth is delegated to the shared lib/graph-client.ts — same ZERO_GRAPH_* credentials
+// and app registration (client 468b4011…) the existing Intune/Defender/Entra syncs use
+// in production. Secure Score requires the SecurityEvents.Read.All application permission
+// on that app registration.
 
 // ─── Simulated fallback data ─────────────────────────────────────────────────
 
@@ -275,11 +259,11 @@ export const grcSecureScoreRoutes: FastifyPluginAsync = async (app) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'Database unavailable' });
 
-    const token = await getMsGraphToken();
-    if (!token) {
+    const client = getGraphClient();
+    if (!client) {
       return reply.code(400).send({
-        error: 'azure_credentials_not_configured',
-        message: 'Set AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET in environment.',
+        error: 'graph_credentials_not_configured',
+        message: 'Graph credentials not set. Configure ZERO_GRAPH_TENANT_ID / ZERO_GRAPH_CLIENT_ID / ZERO_GRAPH_CLIENT_SECRET (already wired in production) and grant SecurityEvents.Read.All to the Graph app registration.',
       });
     }
 
@@ -287,19 +271,13 @@ export const grcSecureScoreRoutes: FastifyPluginAsync = async (app) => {
     let maxScore     = 400.0;
 
     try {
-      const scoreRes = await fetch(
-        'https://graph.microsoft.com/v1.0/security/secureScores?$top=1',
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
-      if (scoreRes.ok) {
-        const scoreData = await scoreRes.json() as {
-          value?: Array<{ currentScore?: number; maxScore?: number }>;
-        };
-        const entry = scoreData.value?.[0];
-        if (entry) {
-          currentScore = entry.currentScore ?? currentScore;
-          maxScore     = entry.maxScore     ?? maxScore;
-        }
+      const scoreData = await client.graphFetch<{
+        value?: Array<{ currentScore?: number; maxScore?: number }>;
+      }>('/security/secureScores?$top=1');
+      const entry = scoreData.value?.[0];
+      if (entry) {
+        currentScore = entry.currentScore ?? currentScore;
+        maxScore     = entry.maxScore     ?? maxScore;
       }
     } catch {
       // fall back to simulated values
@@ -329,16 +307,10 @@ export const grcSecureScoreRoutes: FastifyPluginAsync = async (app) => {
     let usedSimulated = false;
 
     try {
-      const profilesRes = await fetch(
-        'https://graph.microsoft.com/v1.0/security/secureScoreControlProfiles',
-        { headers: { Authorization: `Bearer ${token}` } },
+      const profilesData = await client.graphFetch<{ value?: ControlProfile[] }>(
+        '/security/secureScoreControlProfiles',
       );
-      if (profilesRes.ok) {
-        const profilesData = await profilesRes.json() as { value?: ControlProfile[] };
-        profiles = (profilesData.value ?? []).slice(0, 50);
-      } else {
-        usedSimulated = true;
-      }
+      profiles = (profilesData.value ?? []).slice(0, 50);
     } catch {
       usedSimulated = true;
     }

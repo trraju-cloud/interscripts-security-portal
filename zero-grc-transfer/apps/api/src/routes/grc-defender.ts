@@ -10,6 +10,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { requireModule } from '../middleware/module-guard.js';
 import { getDB } from './time.js';
 import { record as recordAudit } from '../lib/audit-collector.js';
+import { getGraphClient, isPendingConsent, type GraphClient } from '../lib/graph-client.js';
 
 const DEFENDER_TASKS_SEED = [
   { ref: 'DF-001', category: 'IDENTITY', priority: 'P1', title: 'Enable MFA for All Admin Accounts', description: 'Enforce multi-factor authentication for all Azure AD privileged roles using Conditional Access policies.' },
@@ -100,33 +101,10 @@ function percentOf(tasks: Array<{ priority: string; status: string }>, priority:
 }
 
 /* ─── Microsoft Defender (Graph Secure Score) live sync ──────────────────────── */
-
-/**
- * App-only Microsoft Graph token via client_credentials. Reuses the existing
- * zero-api Graph app registration already provisioned in production
- * (AUTH_MICROSOFT_ENTRA_ID_* / ZERO_GRAPH_CLIENT_SECRET) when the dedicated
- * AZURE_* vars are unset. Returns null when no credentials exist — callers then
- * fall back to simulated data.
- */
-async function getGraphToken(): Promise<string | null> {
-  const tenantId = process.env['AZURE_TENANT_ID'] ?? process.env['AUTH_MICROSOFT_ENTRA_ID_TENANT_ID'];
-  const clientId = process.env['AZURE_CLIENT_ID'] ?? process.env['AUTH_MICROSOFT_ENTRA_ID_ID'];
-  const clientSecret = process.env['AZURE_CLIENT_SECRET'] ?? process.env['ZERO_GRAPH_CLIENT_SECRET'];
-  if (!tenantId || !clientId || !clientSecret) return null;
-
-  const res = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
-    method: 'POST',
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      client_secret: clientSecret,
-      scope: 'https://graph.microsoft.com/.default',
-    }),
-  });
-  if (!res.ok) return null;
-  const data = (await res.json()) as { access_token?: string };
-  return data.access_token ?? null;
-}
+// Auth + paging + token caching + consent-error detection are all delegated to the
+// shared lib/graph-client.ts (same ZERO_GRAPH_* credentials and app registration the
+// existing Intune/Defender/Entra syncs already use in production). Secure Score needs
+// the SecurityEvents.Read.All application permission added to that app registration.
 
 interface GraphControlScore {
   controlName?: string;
@@ -160,17 +138,12 @@ interface DefenderControlRow {
   source: string;
 }
 
-/** Pull live control posture from Microsoft Graph Security (Secure Score). */
-async function fetchDefenderControls(token: string): Promise<DefenderControlRow[]> {
-  const headers = { Authorization: `Bearer ${token}` };
-  const [scoreRes, profileRes] = await Promise.all([
-    fetch('https://graph.microsoft.com/v1.0/security/secureScores?$top=1', { headers }),
-    fetch('https://graph.microsoft.com/v1.0/security/secureScoreControlProfiles?$top=200', { headers }),
+/** Pull live control posture from Microsoft Graph Security (Secure Score) via the shared client. */
+async function fetchDefenderControls(client: GraphClient): Promise<DefenderControlRow[]> {
+  const [scoreData, profileData] = await Promise.all([
+    client.graphFetch<{ value?: Array<{ controlScores?: GraphControlScore[] }> }>('/security/secureScores?$top=1'),
+    client.graphFetch<{ value?: GraphControlProfile[] }>('/security/secureScoreControlProfiles?$top=200'),
   ]);
-  if (!scoreRes.ok || !profileRes.ok) return [];
-
-  const scoreData = (await scoreRes.json()) as { value?: Array<{ controlScores?: GraphControlScore[] }> };
-  const profileData = (await profileRes.json()) as { value?: GraphControlProfile[] };
 
   const controlScores = scoreData.value?.[0]?.controlScores ?? [];
   const profiles = new Map<string, GraphControlProfile>();
@@ -288,9 +261,17 @@ export const grcDefenderRoutes: FastifyPluginAsync = async (app) => {
     const db = await getDB(); if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
 
-    const token = await getGraphToken();
+    const client = getGraphClient();
     let controls: DefenderControlRow[] = [];
-    if (token) controls = await fetchDefenderControls(token);
+    let pendingConsent = false;
+    if (client) {
+      try {
+        controls = await fetchDefenderControls(client);
+      } catch (err) {
+        if (isPendingConsent(err)) pendingConsent = true;
+        else throw err;
+      }
+    }
     const live = controls.length > 0;
     if (!live) controls = SIMULATED_DEFENDER_CONTROLS;
 
@@ -318,7 +299,8 @@ export const grcDefenderRoutes: FastifyPluginAsync = async (app) => {
 
     recordAudit({ tenantId: tid, actorUserId: req.auth!.sub, actorRole: req.auth!.roles[0] ?? 'itsec', action: 'grc.defender.sync', resourceType: 'GrcDefenderControl', resourceId: tid, beforeJson: null, afterJson: { synced: controls.length, live } });
 
-    return reply.send({ synced: controls.length, live, source: live ? 'defender' : 'simulated' });
+    const mode = live ? 'defender' : (!client ? 'no-credentials' : pendingConsent ? 'pending-consent' : 'simulated');
+    return reply.send({ synced: controls.length, live, source: live ? 'defender' : 'simulated', mode });
   });
 
   /* ── GET /defender-controls ──────────────────────────────────────────────────

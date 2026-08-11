@@ -46,9 +46,11 @@ mkdir -p "$MIG_DIR"
 cp "$T/packages/db/prisma/migrations/20260811120000_create_grc_defender_control/migration.sql" "$MIG_DIR/migration.sql"
 echo "✔  Migration 20260811120000_create_grc_defender_control in place"
 
-# ── 3. API route (full file, based on latest main) ───────────────────────────
+# ── 3. API routes (full files, based on latest main) ─────────────────────────
 cp "$T/apps/api/src/routes/grc-defender.ts" "apps/api/src/routes/grc-defender.ts"
-echo "✔  grc-defender.ts updated (defender-sync + defender-controls endpoints)"
+echo "✔  grc-defender.ts updated (defender-sync + defender-controls via shared graph-client)"
+cp "$T/apps/api/src/routes/grc-secure-score.ts" "apps/api/src/routes/grc-secure-score.ts"
+echo "✔  grc-secure-score.ts rewired onto shared graph-client (ZERO_GRAPH_* creds)"
 
 # ── 4. UI page (full file, based on latest main) ─────────────────────────────
 cp "$T/apps/web/src/app/(app)/it-security/defender-plan/page.tsx" \
@@ -69,18 +71,22 @@ echo ""
 echo "── Committing and pushing ───────────────────────────────────────────────────"
 git add "$SCHEMA" "$MIG_DIR/migration.sql" \
         "apps/api/src/routes/grc-defender.ts" \
+        "apps/api/src/routes/grc-secure-score.ts" \
         "apps/web/src/app/(app)/it-security/defender-plan/page.tsx"
 
 if git diff --cached --quiet; then
   echo "✔  Nothing to commit — already applied."
 else
-  git commit -m "feat(grc): live Microsoft Defender integration on 90-day plan
+  git commit -m "feat(grc): live Microsoft Defender + Secure Score via shared graph-client
 
 - New grc_defender_control table (model + migration 20260811120000)
 - grc-defender.ts: POST /defender-sync pulls Graph Secure Score control
   posture (secureScores.controlScores + secureScoreControlProfiles),
   GET /defender-controls returns controls with per-category rollups.
-  Reuses zero-api Graph app reg; simulated fallback until consent lands.
+- grc-secure-score.ts: /sync rewired off hand-rolled AZURE_* token onto
+  the shared lib/graph-client.ts (ZERO_GRAPH_* creds, app 468b4011) that
+  the existing Intune/Defender/Entra syncs already use in production.
+- Both degrade to simulated data until SecurityEvents.Read.All consent lands.
 - defender-plan/page.tsx: Live Microsoft Defender Controls panel with
   Secure Score meter, Sync button, and per-control status table."
 
@@ -95,9 +101,12 @@ fi
 echo ""
 echo "══════════════════════════════════════════════════════════════════════════"
 echo "  Done. After the pipeline deploys:"
-echo "   1. Grant SecurityEvents.Read.All to the zero-api app reg + admin consent"
-echo "      (same permission as Secure Score — skip if already done)."
-echo "   2. Open Defender 90-Day Plan → click 'Sync from Defender'."
-echo "  Until consent lands it shows simulated controls (badge says Simulated)."
+echo "   1. Azure Portal → App registrations → open the GRAPH app"
+echo "      client 468b4011-28e9-4ad5-ba9c-021fffddd9fe  (NOT the 2ce1c7a8 SSO app)"
+echo "      → API permissions → Microsoft Graph → Application permissions"
+echo "      → add SecurityEvents.Read.All → Grant admin consent (dot turns green)."
+echo "      (This is the same app that already powers Devices/Incidents sync.)"
+echo "   2. Defender 90-Day Plan → 'Sync from Defender'; Secure Score page → Sync."
+echo "  Until consent lands both show simulated data (badge says Simulated)."
 echo "══════════════════════════════════════════════════════════════════════════"
 echo ""
