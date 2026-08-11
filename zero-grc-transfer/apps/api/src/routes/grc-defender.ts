@@ -99,6 +99,116 @@ function percentOf(tasks: Array<{ priority: string; status: string }>, priority:
   return Math.round((done / subset.length) * 100);
 }
 
+/* ─── Microsoft Defender (Graph Secure Score) live sync ──────────────────────── */
+
+/**
+ * App-only Microsoft Graph token via client_credentials. Reuses the existing
+ * zero-api Graph app registration already provisioned in production
+ * (AUTH_MICROSOFT_ENTRA_ID_* / ZERO_GRAPH_CLIENT_SECRET) when the dedicated
+ * AZURE_* vars are unset. Returns null when no credentials exist — callers then
+ * fall back to simulated data.
+ */
+async function getGraphToken(): Promise<string | null> {
+  const tenantId = process.env['AZURE_TENANT_ID'] ?? process.env['AUTH_MICROSOFT_ENTRA_ID_TENANT_ID'];
+  const clientId = process.env['AZURE_CLIENT_ID'] ?? process.env['AUTH_MICROSOFT_ENTRA_ID_ID'];
+  const clientSecret = process.env['AZURE_CLIENT_SECRET'] ?? process.env['ZERO_GRAPH_CLIENT_SECRET'];
+  if (!tenantId || !clientId || !clientSecret) return null;
+
+  const res = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
+    method: 'POST',
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: clientId,
+      client_secret: clientSecret,
+      scope: 'https://graph.microsoft.com/.default',
+    }),
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { access_token?: string };
+  return data.access_token ?? null;
+}
+
+interface GraphControlScore {
+  controlName?: string;
+  score?: number;
+  total?: number;
+  implementationStatus?: string;
+  controlCategory?: string;
+}
+interface GraphControlProfile {
+  id?: string;
+  title?: string;
+  controlCategory?: string;
+  actionType?: string;
+  service?: string;
+  maxScore?: number;
+  remediation?: string;
+  threats?: string[];
+}
+
+interface DefenderControlRow {
+  controlName: string;
+  title: string;
+  category: string;
+  service: string | null;
+  actionType: string | null;
+  maxScore: number;
+  currentScore: number;
+  implementationStatus: string;
+  remediation: string | null;
+  threats: string[];
+  source: string;
+}
+
+/** Pull live control posture from Microsoft Graph Security (Secure Score). */
+async function fetchDefenderControls(token: string): Promise<DefenderControlRow[]> {
+  const headers = { Authorization: `Bearer ${token}` };
+  const [scoreRes, profileRes] = await Promise.all([
+    fetch('https://graph.microsoft.com/v1.0/security/secureScores?$top=1', { headers }),
+    fetch('https://graph.microsoft.com/v1.0/security/secureScoreControlProfiles?$top=200', { headers }),
+  ]);
+  if (!scoreRes.ok || !profileRes.ok) return [];
+
+  const scoreData = (await scoreRes.json()) as { value?: Array<{ controlScores?: GraphControlScore[] }> };
+  const profileData = (await profileRes.json()) as { value?: GraphControlProfile[] };
+
+  const controlScores = scoreData.value?.[0]?.controlScores ?? [];
+  const profiles = new Map<string, GraphControlProfile>();
+  for (const p of profileData.value ?? []) {
+    if (p.id) profiles.set(p.id.toLowerCase(), p);
+  }
+
+  return controlScores
+    .filter((c): c is GraphControlScore & { controlName: string } => Boolean(c.controlName))
+    .map((c) => {
+      const profile = profiles.get(c.controlName.toLowerCase());
+      return {
+        controlName: c.controlName,
+        title: profile?.title ?? c.controlName,
+        category: c.controlCategory ?? profile?.controlCategory ?? 'Other',
+        service: profile?.service ?? null,
+        actionType: profile?.actionType ?? null,
+        maxScore: profile?.maxScore ?? c.total ?? 0,
+        currentScore: c.score ?? 0,
+        implementationStatus: c.implementationStatus ?? 'unknown',
+        remediation: profile?.remediation ?? null,
+        threats: profile?.threats ?? [],
+        source: 'defender',
+      };
+    });
+}
+
+/** Fallback controls shown until the Graph app reg + SecurityEvents.Read.All consent lands. */
+const SIMULATED_DEFENDER_CONTROLS: DefenderControlRow[] = [
+  { controlName: 'AdminMFAV2', title: 'Require MFA for administrative roles', category: 'Identity', service: 'Microsoft Entra ID', actionType: 'Config', maxScore: 10, currentScore: 10, implementationStatus: 'This control is complete', remediation: 'Require MFA for all admin accounts via Conditional Access.', threats: ['accountBreach'], source: 'simulated' },
+  { controlName: 'MFARegistrationV2', title: 'Ensure all users can complete MFA', category: 'Identity', service: 'Microsoft Entra ID', actionType: 'Config', maxScore: 9, currentScore: 4.5, implementationStatus: 'This control is partially complete', remediation: 'Register all users for multi-factor authentication.', threats: ['accountBreach'], source: 'simulated' },
+  { controlName: 'BlockLegacyAuthentication', title: 'Block legacy authentication', category: 'Identity', service: 'Microsoft Entra ID', actionType: 'Config', maxScore: 8, currentScore: 0, implementationStatus: 'This control is not complete', remediation: 'Block legacy auth protocols with a Conditional Access policy.', threats: ['accountBreach'], source: 'simulated' },
+  { controlName: 'EnableWindowsDefenderAV', title: 'Ensure Microsoft Defender Antivirus is enabled', category: 'Device', service: 'Microsoft Defender for Endpoint', actionType: 'Config', maxScore: 8, currentScore: 6, implementationStatus: 'This control is partially complete', remediation: 'Onboard all devices and enable real-time protection.', threats: ['malware'], source: 'simulated' },
+  { controlName: 'TenantBitLocker', title: 'Ensure BitLocker is enabled on Windows devices', category: 'Device', service: 'Microsoft Intune', actionType: 'Config', maxScore: 6, currentScore: 3, implementationStatus: 'This control is partially complete', remediation: 'Require disk encryption via an Intune compliance policy.', threats: ['dataExfiltration'], source: 'simulated' },
+  { controlName: 'DLP', title: 'Enable Data Loss Prevention policies', category: 'Data', service: 'Microsoft Purview', actionType: 'Config', maxScore: 7, currentScore: 0, implementationStatus: 'This control is not complete', remediation: 'Deploy DLP policies across Exchange, SharePoint, and Teams.', threats: ['dataExfiltration'], source: 'simulated' },
+  { controlName: 'SafeLinks', title: 'Ensure Safe Links is enabled', category: 'Apps', service: 'Microsoft Defender for Office 365', actionType: 'Config', maxScore: 5, currentScore: 5, implementationStatus: 'This control is complete', remediation: 'Enable the Safe Links policy for all users.', threats: ['phishing'], source: 'simulated' },
+];
+
 export const grcDefenderRoutes: FastifyPluginAsync = async (app) => {
   app.get('/tasks', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const query = TasksQuerySchema.safeParse(req.query);
@@ -167,5 +277,96 @@ export const grcDefenderRoutes: FastifyPluginAsync = async (app) => {
     const overdueTasks = allTasks.filter((t) => t.dueDate !== null && t.dueDate < today && t.status !== 'completed' && t.status !== 'not_applicable');
     const recentlyCompleted = allTasks.filter((t) => t.status === 'completed' && t.completedAt !== null).sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0)).slice(0, 5);
     return reply.send({ overallPercent: stats.percentComplete, p1Percent: percentOf(allTasks, 'P1'), p2Percent: percentOf(allTasks, 'P2'), p3Percent: percentOf(allTasks, 'P3'), byCategory, overdueTasks, recentlyCompleted });
+  });
+
+  /* ── POST /defender-sync ─────────────────────────────────────────────────────
+   * Pull live control posture from Microsoft Defender (Graph Secure Score) and
+   * upsert into grc_defender_control. Falls back to simulated controls when the
+   * Graph app registration / SecurityEvents.Read.All consent is not yet in place. */
+  app.post('/defender-sync', { preHandler: requireModule('itsec', 'admin') }, async (req, reply) => {
+    const tid = req.auth!.tid;
+    const db = await getDB(); if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
+    const { prisma } = db;
+
+    const token = await getGraphToken();
+    let controls: DefenderControlRow[] = [];
+    if (token) controls = await fetchDefenderControls(token);
+    const live = controls.length > 0;
+    if (!live) controls = SIMULATED_DEFENDER_CONTROLS;
+
+    const now = new Date();
+    for (const c of controls) {
+      const fields = {
+        title: c.title,
+        category: c.category,
+        service: c.service,
+        actionType: c.actionType,
+        maxScore: c.maxScore,
+        currentScore: c.currentScore,
+        implementationStatus: c.implementationStatus,
+        remediation: c.remediation,
+        threats: c.threats,
+        source: c.source,
+        lastSyncedAt: now,
+      };
+      await prisma.grcDefenderControl.upsert({
+        where: { tenantId_controlName: { tenantId: tid, controlName: c.controlName } },
+        create: { id: uuidv7(), tenantId: tid, controlName: c.controlName, ...fields },
+        update: fields,
+      });
+    }
+
+    recordAudit({ tenantId: tid, actorUserId: req.auth!.sub, actorRole: req.auth!.roles[0] ?? 'itsec', action: 'grc.defender.sync', resourceType: 'GrcDefenderControl', resourceId: tid, beforeJson: null, afterJson: { synced: controls.length, live } });
+
+    return reply.send({ synced: controls.length, live, source: live ? 'defender' : 'simulated' });
+  });
+
+  /* ── GET /defender-controls ──────────────────────────────────────────────────
+   * Live Microsoft Defender control posture with per-category rollups. */
+  app.get('/defender-controls', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
+    const tid = req.auth!.tid;
+    const db = await getDB(); if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
+    const { prisma } = db;
+
+    const controls = await prisma.grcDefenderControl.findMany({ where: { tenantId: tid }, orderBy: [{ category: 'asc' }, { maxScore: 'desc' }] });
+
+    const totalMax = controls.reduce((s, c) => s + Number(c.maxScore), 0);
+    const totalCurrent = controls.reduce((s, c) => s + Number(c.currentScore), 0);
+
+    const byCategoryMap = new Map<string, { category: string; current: number; max: number; count: number }>();
+    for (const c of controls) {
+      const e = byCategoryMap.get(c.category) ?? { category: c.category, current: 0, max: 0, count: 0 };
+      e.current += Number(c.currentScore);
+      e.max += Number(c.maxScore);
+      e.count += 1;
+      byCategoryMap.set(c.category, e);
+    }
+
+    return reply.send({
+      controls: controls.map((c) => ({
+        id: c.id,
+        controlName: c.controlName,
+        title: c.title,
+        category: c.category,
+        service: c.service,
+        actionType: c.actionType,
+        maxScore: Number(c.maxScore),
+        currentScore: Number(c.currentScore),
+        implementationStatus: c.implementationStatus,
+        remediation: c.remediation,
+        threats: c.threats,
+        source: c.source,
+        lastSyncedAt: c.lastSyncedAt.toISOString(),
+      })),
+      summary: {
+        totalControls: controls.length,
+        totalCurrent,
+        totalMax,
+        percent: totalMax > 0 ? Math.round((totalCurrent / totalMax) * 100) : 0,
+        byCategory: [...byCategoryMap.values()].sort((a, b) => a.category.localeCompare(b.category)),
+        source: controls[0]?.source ?? null,
+        lastSyncedAt: controls[0]?.lastSyncedAt.toISOString() ?? null,
+      },
+    });
   });
 };

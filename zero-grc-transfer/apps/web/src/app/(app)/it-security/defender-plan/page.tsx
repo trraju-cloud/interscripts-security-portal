@@ -89,7 +89,7 @@ function TaskCard({ task, onUpdate }: { task: DefenderTask; onUpdate: (ref: stri
           <input
             defaultValue={task.assignedTo ?? ''}
             placeholder="—"
-            onBlur={e => { if (e.target.value !== (task.assignedTo ?? '')) void patch({ assignedTo: e.target.value || undefined }); }}
+            onBlur={e => { if (e.target.value !== (task.assignedTo ?? '')) void patch({ assignedTo: e.target.value || null }); }}
             className="ml-1 min-w-0 flex-1 border-0 border-b border-[var(--border-subtle)] bg-transparent py-0.5 text-[var(--ink-primary)] placeholder:text-[var(--ink-tertiary)] focus:border-[var(--brand-500)] focus:outline-none"
           />
         </label>
@@ -98,7 +98,7 @@ function TaskCard({ task, onUpdate }: { task: DefenderTask; onUpdate: (ref: stri
           <input
             type="date"
             defaultValue={task.dueDate?.slice(0, 10) ?? ''}
-            onBlur={e => { if (e.target.value !== (task.dueDate?.slice(0, 10) ?? '')) void patch({ dueDate: e.target.value || undefined }); }}
+            onBlur={e => { if (e.target.value !== (task.dueDate?.slice(0, 10) ?? '')) void patch({ dueDate: e.target.value || null }); }}
             className="border-0 border-b border-[var(--border-subtle)] bg-transparent text-[var(--ink-primary)] focus:border-[var(--brand-500)] focus:outline-none"
           />
         </label>
@@ -112,7 +112,7 @@ function TaskCard({ task, onUpdate }: { task: DefenderTask; onUpdate: (ref: stri
           <textarea
             value={notes}
             onChange={e => setNotes(e.target.value)}
-            onBlur={() => { if (notes !== (task.notes ?? '')) void patch({ notes: notes || undefined }); }}
+            onBlur={() => { if (notes !== (task.notes ?? '')) void patch({ notes: notes || null }); }}
             rows={3}
             className="w-full rounded-md border border-[var(--border-subtle)] bg-[var(--surface-overlay)] px-3 py-2 text-xs text-[var(--ink-primary)] placeholder:text-[var(--ink-tertiary)] focus:border-[var(--brand-500)] focus:outline-none"
             placeholder="Add notes..."
@@ -134,6 +134,135 @@ function ProgressBar({ value, label, color = 'bg-[var(--brand-500)]' }: { value:
       <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--surface-sunken)]">
         <div className={`h-full rounded-full ${color}`} style={{ width: `${Math.min(value, 100)}%` }} />
       </div>
+    </div>
+  );
+}
+
+// ─── Live Microsoft Defender controls ──────────────────────────────────────────
+
+interface LiveControl {
+  id: string; controlName: string; title: string; category: string;
+  service: string | null; actionType: string | null;
+  maxScore: number; currentScore: number; implementationStatus: string;
+  remediation: string | null; threats: string[]; source: string; lastSyncedAt: string;
+}
+interface LiveSummary {
+  totalControls: number; totalCurrent: number; totalMax: number; percent: number;
+  byCategory: Array<{ category: string; current: number; max: number; count: number }>;
+  source: string | null; lastSyncedAt: string | null;
+}
+
+function statusTone(status: string): string {
+  const s = status.toLowerCase();
+  if (s.includes('not complete') || s.includes('not started')) return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+  if (s.includes('partial')) return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300';
+  if (s.includes('complete')) return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300';
+  return 'bg-gray-100 text-gray-600 dark:bg-gray-800/50 dark:text-gray-400';
+}
+
+function LiveDefenderControls() {
+  const [controls, setControls] = React.useState<LiveControl[]>([]);
+  const [summary, setSummary] = React.useState<LiveSummary | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [syncing, setSyncing] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/v1/grc-defender/defender-controls');
+      if (res.ok) {
+        const d = await res.json() as { controls: LiveControl[]; summary: LiveSummary };
+        setControls(d.controls ?? []);
+        setSummary(d.summary ?? null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => { void load(); }, [load]);
+
+  const sync = async () => {
+    setSyncing(true);
+    try {
+      await fetch('/api/v1/grc-defender/defender-sync', { method: 'POST' });
+      await load();
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-raised)] p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-sm font-semibold text-[var(--ink-primary)]">Live Microsoft Defender Controls</h2>
+        {summary?.source === 'simulated' && (
+          <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300">Simulated</span>
+        )}
+        {summary?.source === 'defender' && (
+          <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-green-800 dark:bg-green-900/30 dark:text-green-300">Live</span>
+        )}
+        {summary?.lastSyncedAt && (
+          <span className="text-xs text-[var(--ink-tertiary)]">Synced {new Date(summary.lastSyncedAt).toLocaleString()}</span>
+        )}
+        <button onClick={() => void sync()} disabled={syncing} className="ml-auto rounded-lg bg-[var(--brand-600)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50">
+          {syncing ? 'Syncing…' : 'Sync from Defender'}
+        </button>
+      </div>
+
+      {summary && summary.totalControls > 0 && (
+        <div className="mt-4 flex flex-wrap items-end gap-6">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-[var(--ink-tertiary)]">Secure Score</p>
+            <p className="text-3xl font-bold text-[var(--ink-primary)]">{Math.round(summary.totalCurrent)}<span className="text-base font-normal text-[var(--ink-tertiary)]"> / {Math.round(summary.totalMax)}</span></p>
+          </div>
+          <div className="min-w-[8rem] flex-1">
+            <div className="flex justify-between text-xs text-[var(--ink-tertiary)]"><span>{summary.percent}% secure</span><span>{summary.totalControls} controls</span></div>
+            <div className="mt-1 h-2 overflow-hidden rounded-full bg-[var(--surface-sunken)]">
+              <div className="h-full rounded-full bg-[var(--brand-500)]" style={{ width: `${Math.min(summary.percent, 100)}%` }} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex h-24 items-center justify-center">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--brand-500)] border-t-transparent" />
+        </div>
+      ) : controls.length === 0 ? (
+        <div className="mt-4 flex h-24 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-[var(--border-subtle)] text-sm text-[var(--ink-tertiary)]">
+          <span>No control data yet.</span>
+          <span>Click &quot;Sync from Defender&quot; to pull live Secure Score controls.</span>
+        </div>
+      ) : (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="text-[var(--ink-tertiary)]">
+              <tr className="border-b border-[var(--border-subtle)]">
+                <th className="py-2 pr-3 font-medium">Control</th>
+                <th className="py-2 pr-3 font-medium">Category</th>
+                <th className="py-2 pr-3 font-medium">Service</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 pr-3 text-right font-medium">Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {controls.map((c) => (
+                <tr key={c.id} className="border-b border-[var(--border-subtle)] last:border-0">
+                  <td className="py-2 pr-3">
+                    <span className="font-medium text-[var(--ink-primary)]">{c.title}</span>
+                    <span className="ml-2 font-mono text-[10px] text-[var(--ink-tertiary)]">{c.controlName}</span>
+                  </td>
+                  <td className="py-2 pr-3 text-[var(--ink-secondary)]">{c.category}</td>
+                  <td className="py-2 pr-3 text-[var(--ink-secondary)]">{c.service ?? '—'}</td>
+                  <td className="py-2 pr-3"><span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${statusTone(c.implementationStatus)}`}>{c.implementationStatus}</span></td>
+                  <td className="py-2 pr-3 text-right tabular-nums text-[var(--ink-primary)]">{c.currentScore}/{c.maxScore}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -270,7 +399,10 @@ export default function DefenderPlanPage() {
         title="Defender 90-Day Remediation Plan"
         description="44 prioritised tasks across Identity, Endpoint, Apps, Data, Infrastructure, IoT, Network, and Collaboration."
       />
-      <DefenderPlanContent />
+      <div className="space-y-6">
+        <LiveDefenderControls />
+        <DefenderPlanContent />
+      </div>
     </ModuleGate>
   );
 }
