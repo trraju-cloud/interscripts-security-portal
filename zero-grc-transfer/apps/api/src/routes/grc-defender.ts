@@ -71,7 +71,7 @@ const TaskPatchBody = z.object({ status: z.enum(TASK_STATUSES).optional(), assig
 
 type PrismaClient = NonNullable<Awaited<ReturnType<typeof getDB>>['prisma']>;
 
-async function seedTenantTasks(prisma: PrismaClient, tid: string): Promise<void> {
+export async function seedTenantTasks(prisma: PrismaClient, tid: string): Promise<void> {
   await Promise.all(DEFENDER_TASKS_SEED.map((t) => prisma.grcDefenderTask.upsert({
     where: { tenantId_taskRef: { tenantId: tid, taskRef: t.ref } },
     create: { id: uuidv7(), tenantId: tid, taskRef: t.ref, title: t.title, description: t.description, category: t.category, priority: t.priority, status: 'pending' },

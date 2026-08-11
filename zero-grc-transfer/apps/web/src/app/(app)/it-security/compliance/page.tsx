@@ -380,7 +380,7 @@ function ComplianceContent() {
 
 export default function CompliancePage() {
   return (
-    <ModuleGate module="compliance" prettyName="GRC Compliance">
+    <ModuleGate module="itsec" prettyName="IT & Security">
       <PageHeader
         eyebrow="IT & Security · GRC"
         title="Compliance Frameworks"

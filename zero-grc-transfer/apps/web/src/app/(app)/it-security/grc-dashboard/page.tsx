@@ -143,7 +143,7 @@ function GrcDashboardContent() {
 
 export default function GrcDashboardPage() {
   return (
-    <ModuleGate module="compliance" prettyName="GRC Compliance">
+    <ModuleGate module="itsec" prettyName="IT & Security">
       <PageHeader eyebrow="IT &amp; Security · GRC" title="Compliance Posture Dashboard" description="Composite GRC score from frameworks, Defender plan, and Secure Score." />
       <GrcDashboardContent />
     </ModuleGate>

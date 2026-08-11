@@ -196,18 +196,90 @@ const AssessmentPatchBody = z.object({
   nextReviewAt:       z.string().optional(),
 });
 
+// ─── Seeding ──────────────────────────────────────────────────────────────────────
+
+type FwPrisma = NonNullable<Awaited<ReturnType<typeof getDB>>['prisma']>;
+
+/**
+ * Deterministic SAMPLE assessment status so a freshly-bootstrapped tenant shows a
+ * realistic spread (not a flat 0%). Index-based (no randomness) → reproducible.
+ * Users overwrite these as they do real control work via the assessment PATCH.
+ */
+function demoAssessmentStatus(index: number): string {
+  const cycle = index % 10;
+  if (cycle < 4) return 'implemented';     // 40%
+  if (cycle < 6) return 'in_progress';     // 20%
+  if (cycle < 7) return 'not_applicable';  // 10%
+  return 'not_started';                     // 30%
+}
+
+/**
+ * Enable a framework and seed its controls + assessments. When `demo` is true,
+ * assessments get the deterministic sample spread above; otherwise all not_started.
+ * Idempotent (upserts). Returns the number of controls in the framework.
+ */
+export async function seedFrameworkForTenant(prisma: FwPrisma, tid: string, key: string, demo: boolean): Promise<number> {
+  const def = FRAMEWORK_DEFS[key as ValidFrameworkKey];
+  if (!def) return 0;
+
+  await prisma.grcFramework.upsert({
+    where:  { tenantId_key: { tenantId: tid, key } },
+    create: {
+      id:            uuidv7(),
+      tenantId:      tid,
+      key,
+      name:          def.name,
+      version:       def.version,
+      totalControls: def.controls.length,
+      enabledAt:     new Date(),
+    },
+    update: {},
+  });
+
+  const now = new Date();
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < def.controls.length; i += BATCH_SIZE) {
+    const batch = def.controls.slice(i, i + BATCH_SIZE);
+    await Promise.all(
+      batch.map(async (ctrl, j) => {
+        await prisma.grcControl.upsert({
+          where:  { tenantId_frameworkKey_controlId: { tenantId: tid, frameworkKey: key, controlId: ctrl.id } },
+          create: {
+            id: uuidv7(), tenantId: tid, frameworkKey: key, controlId: ctrl.id,
+            family: ctrl.family, title: ctrl.title, description: ctrl.description,
+            priority: ctrl.priority, baseline: ctrl.baseline,
+          },
+          update: {},
+        });
+        const status = demo ? demoAssessmentStatus(i + j) : 'not_started';
+        const assessed = status === 'implemented' || status === 'inherited';
+        await prisma.grcControlAssessment.upsert({
+          where:  { tenantId_frameworkKey_controlId: { tenantId: tid, frameworkKey: key, controlId: ctrl.id } },
+          create: {
+            id: uuidv7(), tenantId: tid, frameworkKey: key, controlId: ctrl.id,
+            status, evidenceLinks: [],
+            ...(assessed ? { assessedBy: 'sample-data', assessedAt: now } : {}),
+          },
+          update: {},
+        });
+      }),
+    );
+  }
+  return def.controls.length;
+}
+
 // ─── Route plugin ─────────────────────────────────────────────────────────────────
 
 export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
 
   // ── GET /frameworks ──────────────────────────────────────────────────────────
-  app.get('/frameworks', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/frameworks', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const tid = req.auth!.tid;
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.code(503).send({ error: 'db_unavailable' });
     const prisma = db.prisma!;
 
-    const [frameworks, statusGroups] = await Promise.all([
+    let [frameworks, statusGroups] = await Promise.all([
       prisma.grcFramework.findMany({
         where:   { tenantId: tid },
         orderBy: { enabledAt: 'desc' },
@@ -218,6 +290,18 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
         _count: { status: true },
       }),
     ]);
+
+    // First visit: bootstrap FedRAMP 20x + CMMC L2 with sample assessment data so the
+    // page and dashboard show meaningful numbers immediately (mirrors the Defender seed).
+    if (frameworks.length === 0) {
+      for (const k of ['fedramp_20x', 'cmmc_l2']) {
+        await seedFrameworkForTenant(prisma, tid, k, true);
+      }
+      [frameworks, statusGroups] = await Promise.all([
+        prisma.grcFramework.findMany({ where: { tenantId: tid }, orderBy: { enabledAt: 'desc' } }),
+        prisma.grcControlAssessment.groupBy({ by: ['frameworkKey', 'status'], where: { tenantId: tid }, _count: { status: true } }),
+      ]);
+    }
 
     const result = frameworks.map(fw => {
       const fwGroups = statusGroups.filter(g => g.frameworkKey === fw.key);
@@ -248,7 +332,7 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── POST /frameworks/:key/enable ───────────────────────────────────────────────
-  app.post('/frameworks/:key/enable', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.post('/frameworks/:key/enable', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const { key } = req.params as { key: string };
     const tid = req.auth!.tid;
 
@@ -263,59 +347,8 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
     if (!(db.ok && db.prisma)) return reply.code(503).send({ error: 'db_unavailable' });
     const prisma = db.prisma!;
 
-    await prisma.grcFramework.upsert({
-      where:  { tenantId_key: { tenantId: tid, key } },
-      create: {
-        id:            uuidv7(),
-        tenantId:      tid,
-        key,
-        name:          def.name,
-        version:       def.version,
-        totalControls: def.controls.length,
-        enabledAt:     new Date(),
-      },
-      update: {},
-    });
-
-    const BATCH_SIZE = 10;
-    for (let i = 0; i < def.controls.length; i += BATCH_SIZE) {
-      const batch = def.controls.slice(i, i + BATCH_SIZE);
-      await Promise.all(
-        batch.map(async (ctrl) => {
-          await prisma.grcControl.upsert({
-            where: {
-              tenantId_frameworkKey_controlId: { tenantId: tid, frameworkKey: key, controlId: ctrl.id },
-            },
-            create: {
-              id:          uuidv7(),
-              tenantId:    tid,
-              frameworkKey: key,
-              controlId:   ctrl.id,
-              family:      ctrl.family,
-              title:       ctrl.title,
-              description: ctrl.description,
-              priority:    ctrl.priority,
-              baseline:    ctrl.baseline,
-            },
-            update: {},
-          });
-          await prisma.grcControlAssessment.upsert({
-            where: {
-              tenantId_frameworkKey_controlId: { tenantId: tid, frameworkKey: key, controlId: ctrl.id },
-            },
-            create: {
-              id:           uuidv7(),
-              tenantId:     tid,
-              frameworkKey: key,
-              controlId:    ctrl.id,
-              status:       'not_started',
-              evidenceLinks: [],
-            },
-            update: {},
-          });
-        }),
-      );
-    }
+    // Manual enable seeds real controls at not_started (no sample assessments).
+    await seedFrameworkForTenant(prisma, tid, key, false);
 
     recordAudit({
       tenantId:     tid,
@@ -332,7 +365,7 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── GET /frameworks/:key/controls ───────────────────────────────────────────────
-  app.get('/frameworks/:key/controls', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/frameworks/:key/controls', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const { key } = req.params as { key: string };
     const tid = req.auth!.tid;
 
@@ -409,7 +442,7 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── GET /frameworks/:key/controls/:controlId ────────────────────────────────────────
-  app.get('/frameworks/:key/controls/:controlId', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/frameworks/:key/controls/:controlId', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const { key, controlId } = req.params as { key: string; controlId: string };
     const tid = req.auth!.tid;
 
@@ -450,7 +483,7 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── PATCH /frameworks/:key/controls/:controlId/assessment ────────────────────────────
-  app.patch('/frameworks/:key/controls/:controlId/assessment', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.patch('/frameworks/:key/controls/:controlId/assessment', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const { key, controlId } = req.params as { key: string; controlId: string };
     const tid = req.auth!.tid;
 
@@ -480,11 +513,11 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
         frameworkKey:       key,
         controlId,
         status:             body.status             ?? 'not_started',
-        implementationNote: body.implementationNote,
+        implementationNote: body.implementationNote ?? null,
         evidenceLinks:      body.evidenceLinks      ?? [],
         assessedBy:         req.auth!.sub,
         assessedAt:         now,
-        nextReviewAt:       nextReviewDate,
+        nextReviewAt:       nextReviewDate ?? null,
       },
       update: {
         ...(body.status             !== undefined && { status:             body.status             }),
@@ -519,7 +552,7 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── GET /frameworks/:key/dashboard ──────────────────────────────────────────────
-  app.get('/frameworks/:key/dashboard', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/frameworks/:key/dashboard', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const { key } = req.params as { key: string };
     const tid = req.auth!.tid;
 
@@ -585,7 +618,7 @@ export const grcFrameworksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── GET /frameworks/:key/export ────────────────────────────────────────────────
-  app.get('/frameworks/:key/export', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.get('/frameworks/:key/export', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const { key } = req.params as { key: string };
     const tid = req.auth!.tid;
 

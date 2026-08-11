@@ -55,10 +55,32 @@ function simulatedDevices(): Array<{ hostname: string; ip: string; mac: string |
   ];
 }
 
+type FgPrisma = NonNullable<Awaited<ReturnType<typeof getDB>>['prisma']>;
+
+/**
+ * Seed a sample (not-connected) config + simulated alerts/devices on first load so the
+ * FortiGate dashboard shows numbers without a real appliance. Idempotent — no-op once a
+ * config exists. Users replace the sample with their appliance via PUT /config.
+ */
+async function seedFortiGateSample(prisma: FgPrisma, tid: string): Promise<void> {
+  if (await prisma.grcFortiGateConfig.findUnique({ where: { tenantId: tid } })) return;
+  const now = new Date();
+  await prisma.grcFortiGateConfig.create({
+    data: { id: uuidv7(), tenantId: tid, host: 'sample.fortigate.local', port: 443, vdom: 'root', apiKey: 'sample', enabled: false, lastSyncAt: now, lastSyncStatus: 'sample-data' },
+  });
+  for (const alert of simulatedAlerts(tid)) {
+    await prisma.grcFortiGateAlert.upsert({ where: { tenantId_alertId: { tenantId: tid, alertId: alert.alertId } }, create: { id: uuidv7(), tenantId: tid, ...alert, status: 'open', syncedAt: now }, update: {} });
+  }
+  for (const device of simulatedDevices()) {
+    await prisma.grcFortiGateDevice.upsert({ where: { tenantId_ip: { tenantId: tid, ip: device.ip } }, create: { id: uuidv7(), tenantId: tid, ...device, syncedAt: now }, update: {} });
+  }
+}
+
 export const grcFortiGateRoutes: FastifyPluginAsync = async (app) => {
   app.get('/config', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const db = await getDB(); if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db; const tid = req.auth!.tid;
+    await seedFortiGateSample(prisma, tid);
     const cfg = await prisma.grcFortiGateConfig.findUnique({ where: { tenantId: tid } });
     if (!cfg) return { configured: false };
     return { configured: true, host: cfg.host, port: cfg.port, vdom: cfg.vdom, enabled: cfg.enabled, lastSyncAt: cfg.lastSyncAt, lastSyncStatus: cfg.lastSyncStatus };
@@ -164,6 +186,7 @@ export const grcFortiGateRoutes: FastifyPluginAsync = async (app) => {
   app.get('/dashboard', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const db = await getDB(); if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db; const tid = req.auth!.tid;
+    await seedFortiGateSample(prisma, tid);
     const [cfg, alertGroups, deviceGroups] = await Promise.all([prisma.grcFortiGateConfig.findUnique({ where: { tenantId: tid } }), prisma.grcFortiGateAlert.groupBy({ by: ['status', 'severity'], where: { tenantId: tid }, _count: true }), prisma.grcFortiGateDevice.groupBy({ by: ['status'], where: { tenantId: tid }, _count: true })]);
     const countAlerts = (status: string, severity?: string) => alertGroups.filter(r => r.status === status && (!severity || r.severity === severity)).reduce((s, r) => s + r._count, 0);
     const countDevices = (status: string) => deviceGroups.filter(r => r.status === status).reduce((s, r) => s + r._count, 0);

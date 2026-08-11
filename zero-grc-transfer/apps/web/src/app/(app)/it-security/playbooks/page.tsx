@@ -37,7 +37,7 @@ function CreatePlaybookModal({ categories, onClose, onCreate }: {
   const [title, setTitle] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [framework, setFramework] = React.useState('General');
-  const [steps, setSteps] = React.useState<Array<{ title: string; description: string; responsible: string; estimatedHours?: number }>>([]);
+  const [steps, setSteps] = React.useState<Array<{ title: string; description: string; responsible: string; estimatedHours?: number | undefined }>>([]);
   const [saving, setSaving] = React.useState(false);
 
   const addStep = () => setSteps(s => [...s, { title: '', description: '', responsible: 'CISO' }]);
@@ -316,7 +316,7 @@ function PlaybooksContent() {
 
 export default function PlaybooksPage() {
   return (
-    <ModuleGate module="compliance" prettyName="GRC Compliance">
+    <ModuleGate module="itsec" prettyName="IT & Security">
       <PageHeader
         eyebrow="IT & Security · GRC"
         title="Remediation Playbooks"

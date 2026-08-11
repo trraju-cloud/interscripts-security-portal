@@ -46,7 +46,7 @@ const ConfigBodySchema = z.object({
 });
 
 export const grcVantaRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/config', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/config', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const tid = req.auth!.tid;
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
@@ -56,7 +56,7 @@ export const grcVantaRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ configured: true, orgSlug: config.orgSlug, enabled: config.enabled, lastSyncAt: config.lastSyncAt, lastSyncStatus: config.lastSyncStatus });
   });
 
-  app.put('/config', { preHandler: requireModule('compliance', 'admin') }, async (req, reply) => {
+  app.put('/config', { preHandler: requireModule('itsec', 'admin') }, async (req, reply) => {
     const parsed = ConfigBodySchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_body', issues: parsed.error.issues });
     const body = parsed.data;
@@ -79,7 +79,7 @@ export const grcVantaRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, orgSlug: body.orgSlug, connectivity: connectivityOk ? 'ok' : 'unreachable' });
   });
 
-  app.delete('/config', { preHandler: requireModule('compliance', 'admin') }, async (req, reply) => {
+  app.delete('/config', { preHandler: requireModule('itsec', 'admin') }, async (req, reply) => {
     const tid = req.auth!.tid;
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
@@ -92,7 +92,7 @@ export const grcVantaRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true });
   });
 
-  app.post('/sync', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.post('/sync', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const tid = req.auth!.tid;
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
@@ -114,9 +114,17 @@ export const grcVantaRoutes: FastifyPluginAsync = async (app) => {
       if (keywords.length === 0) continue;
       let matched = false;
       for (const keyword of keywords) {
-        const candidates = await prisma.grcControlAssessment.findMany({ where: { tenantId: tid, controlId: { contains: keyword, mode: 'insensitive' } }, select: { id: true, tenantId: true, frameworkKey: true, controlId: true } });
-        if (candidates.length > 0) {
-          await prisma.grcControlAssessment.updateMany({ where: { tenantId: tid, id: { in: candidates.map((c) => c.id) } }, data: { status: grcStatus, assessedAt: new Date() } });
+        // Match against control TITLE/DESCRIPTION (controlId is a NIST code like "AC-1"
+        // that never contains English keywords), then update the linked assessments.
+        const controls = await prisma.grcControl.findMany({
+          where: { tenantId: tid, OR: [{ title: { contains: keyword, mode: 'insensitive' } }, { description: { contains: keyword, mode: 'insensitive' } }] },
+          select: { frameworkKey: true, controlId: true },
+        });
+        if (controls.length > 0) {
+          await prisma.grcControlAssessment.updateMany({
+            where: { tenantId: tid, OR: controls.map((c) => ({ frameworkKey: c.frameworkKey, controlId: c.controlId })) },
+            data: { status: grcStatus, assessedAt: new Date() },
+          });
           controlsImported++; matched = true; break;
         }
       }
@@ -128,7 +136,7 @@ export const grcVantaRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ ok: true, syncEventId: event.id, controlsImported, controlsFailed: 0 });
   });
 
-  app.get('/sync-history', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/sync-history', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const tid = req.auth!.tid;
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
@@ -137,7 +145,7 @@ export const grcVantaRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ events });
   });
 
-  app.get('/status', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/status', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const tid = req.auth!.tid;
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });

@@ -80,13 +80,52 @@ const createStepSchema = z.object({
 
 // ─── Plugin ───────────────────────────────────────────────────────────────────
 
+type PbPrisma = NonNullable<Awaited<ReturnType<typeof getDB>>['prisma']>;
+
+const STANDARD_PLAYBOOK_STEPS = [
+  { title: 'Detect & Triage',  responsible: 'SOC Analyst',       description: 'Identify the event, validate its severity, and open an incident record.' },
+  { title: 'Contain',          responsible: 'Security Engineer', description: 'Isolate affected systems or accounts to limit the blast radius.' },
+  { title: 'Eradicate',        responsible: 'Security Engineer', description: 'Remove the root cause and any persistence; patch the exploited weakness.' },
+  { title: 'Recover & Review', responsible: 'IT Manager',        description: 'Restore services, confirm normal operation, and run a post-incident review.' },
+];
+
+/**
+ * Seed one starter playbook (with the 4 standard steps) per category so the library shows
+ * content on first load. Idempotent — no-op once any playbook exists. Sample data users edit.
+ */
+export async function seedPlaybookLibrary(prisma: PbPrisma, tid: string): Promise<void> {
+  if ((await prisma.grcPlaybook.count({ where: { tenantId: tid } })) > 0) return;
+  let n = 0;
+  for (const [key, meta] of Object.entries(PLAYBOOK_CATEGORIES)) {
+    n += 1;
+    const pbId = uuidv7();
+    await prisma.grcPlaybook.create({
+      data: {
+        id: pbId, tenantId: tid, ref: `PBK-SAMPLE-${String(n).padStart(4, '0')}`,
+        category: key, title: `${meta.label} Response Playbook`,
+        description: `Standard operating procedure for ${meta.label.toLowerCase()} events. Sample starter playbook — edit the steps to match your environment.`,
+        framework: meta.framework, status: 'active', version: 1, createdBy: 'sample-data',
+      },
+    });
+    await prisma.grcPlaybookStep.createMany({
+      data: STANDARD_PLAYBOOK_STEPS.map((s, i) => ({
+        id: uuidv7(), playbookId: pbId, stepOrder: i + 1,
+        title: s.title, description: s.description, responsible: s.responsible,
+        estimatedHours: null, evidence: null,
+      })),
+    });
+  }
+}
+
 export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
   // ─── GET /categories ──────────────────────────────────────────────────────
-  app.get('/categories', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/categories', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
     const tid = req.auth!.tid;
+
+    await seedPlaybookLibrary(prisma, tid);
 
     const rows = await prisma.grcPlaybook.groupBy({
       by: ['category'],
@@ -108,11 +147,13 @@ export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ─── GET /playbooks ───────────────────────────────────────────────────────
-  app.get('/playbooks', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/playbooks', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
     const tid = req.auth!.tid;
+
+    await seedPlaybookLibrary(prisma, tid);
 
     const parsed = listQuerySchema.safeParse(req.query);
     if (!parsed.success) return reply.status(400).send({ error: 'invalid_query', details: parsed.error.flatten() });
@@ -146,7 +187,7 @@ export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ─── GET /playbooks/:id ───────────────────────────────────────────────────
-  app.get('/playbooks/:id', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/playbooks/:id', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
@@ -166,7 +207,7 @@ export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ─── POST /playbooks ──────────────────────────────────────────────────────
-  app.post('/playbooks', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.post('/playbooks', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
@@ -227,11 +268,12 @@ export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
       afterJson:    { ref: playbook!.ref, category: playbook!.category, title: playbook!.title },
     });
 
-    return reply.status(201).send(playbook);
+    // Include stepCount so the list card shows the right count without a refetch.
+    return reply.status(201).send({ ...playbook!, stepCount: playbook!.steps.length });
   });
 
   // ─── PATCH /playbooks/:id ─────────────────────────────────────────────────
-  app.patch('/playbooks/:id', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.patch('/playbooks/:id', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
@@ -272,7 +314,7 @@ export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ─── POST /playbooks/:id/steps ────────────────────────────────────────────
-  app.post('/playbooks/:id/steps', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.post('/playbooks/:id/steps', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
@@ -320,7 +362,7 @@ export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ─── DELETE /playbooks/:id/steps/:stepId ─────────────────────────────────
-  app.delete('/playbooks/:id/steps/:stepId', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.delete('/playbooks/:id/steps/:stepId', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
@@ -350,7 +392,7 @@ export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ─── POST /playbooks/:id/generate-policy ──────────────────────────────────
-  app.post('/playbooks/:id/generate-policy', { preHandler: requireModule('compliance', 'editor') }, async (req, reply) => {
+  app.post('/playbooks/:id/generate-policy', { preHandler: requireModule('itsec', 'editor') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
@@ -418,7 +460,7 @@ export const grcPlaybooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ─── GET /dashboard ───────────────────────────────────────────────────────
-  app.get('/dashboard', { preHandler: requireModule('compliance', 'viewer') }, async (req, reply) => {
+  app.get('/dashboard', { preHandler: requireModule('itsec', 'viewer') }, async (req, reply) => {
     const db = await getDB();
     if (!(db.ok && db.prisma)) return reply.status(503).send({ error: 'db_unavailable' });
     const { prisma } = db;
