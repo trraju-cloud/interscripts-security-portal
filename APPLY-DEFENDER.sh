@@ -59,12 +59,21 @@ echo "✔  defender-plan/page.tsx updated (Live Defender Controls panel)"
 
 rm -rf "$RELAY_DIR"
 
-# ── 5. Verify Prisma schema validates + regenerate client ────────────────────
+# ── 5. Verify Prisma schema validates ────────────────────────────────────────
+# `prisma validate` only checks schema syntax, but still requires the datasource's
+# env("DATABASE_URL") to resolve. Supply a dummy when it's not set in this shell
+# (no DB connection is made for validation) so the check works locally too.
 echo ""
 echo "── Validating Prisma schema ─────────────────────────────────────────────────"
-pnpm --filter @zero/db exec prisma validate 2>&1 | tail -3 || {
-  echo "❌  Prisma schema failed to validate — aborting before commit."; exit 1;
-}
+if DATABASE_URL="${DATABASE_URL:-postgresql://validate:validate@localhost:5432/validate}" \
+     pnpm --filter @zero/db exec prisma validate 2>&1 | tail -3; then
+  echo "✔  Prisma schema is valid"
+else
+  echo "❌  Prisma schema failed to validate — aborting before commit."
+  echo "    (If this printed only an env/connection error, your schema is fine —"
+  echo "     re-run with your real DATABASE_URL exported, or check the message above.)"
+  exit 1
+fi
 
 # ── 6. Commit and push (auto-rebase) ─────────────────────────────────────────
 echo ""
